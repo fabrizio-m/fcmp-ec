@@ -19,19 +19,22 @@ use group::{
 use dalek_ff_group::FieldElement as Field25519;
 use crate::{backend::u8_from_bool, field::HelioseleneField};
 
+trait CurveParams<F> {
+  const G_X: F;
+  const G_Y: F;
+  const B: F;
+}
+
 macro_rules! curve {
   (
     $Scalar: ident,
     $Field: ident,
     $Point: ident,
-    $B: literal,
-    $G_X: literal,
-    $G_Y: literal,
+    $Params: ident
   ) => {
-    const G_X: $Field = $Field(Residue::new(&U256::from_be_hex($G_X)));
-    const G_Y: $Field = $Field(Residue::new(&U256::from_be_hex($G_Y)));
-
-    const B: $Field = $Field(Residue::new(&U256::from_be_hex($B)));
+    const G_X: $Field = $Params::G_X;
+    const G_Y: $Field = $Params::G_Y;
+    const B: $Field = $Params::B;
 
     fn recover_y(x: $Field) -> CtOption<$Field> {
       // x**3 + -3x + B
@@ -263,7 +266,7 @@ macro_rules! curve {
         // Precompute the optimal amount that's a multiple of 2
         let mut table = [$Point::identity(); 16];
         table[1] = self;
-        for i in 2 .. 16 {
+        for i in 2..16 {
           table[i] = table[i - 1] + self;
         }
 
@@ -277,13 +280,13 @@ macro_rules! curve {
 
           if ((i + 1) % 4) == 0 {
             if i != 3 {
-              for _ in 0 .. 4 {
+              for _ in 0..4 {
                 res = res.double();
               }
             }
 
             let mut term = table[0];
-            for (j, candidate) in table[1 ..].iter().enumerate() {
+            for (j, candidate) in table[1..].iter().enumerate() {
               let j = j + 1;
               term = Self::conditional_select(&term, &candidate, usize::from(bits).ct_eq(&j));
             }
@@ -391,14 +394,21 @@ macro_rules! curve {
 
 mod helios {
   use super::*;
-  curve!(
-    HelioseleneField,
-    Field25519,
-    HeliosPoint,
-    "22e8c739b0ea70b8be94a76b3ebb7b3b043f6f384113bf3522b49ee1edd73ad4",
-    "0000000000000000000000000000000000000000000000000000000000000003",
-    "537b74d97ac0721cbd92668350205f0759003bddc586a5dcd243e639e3183ef4",
-  );
+
+  struct HeliosParams;
+  impl CurveParams<Field25519> for HeliosParams {
+    const G_X: Field25519 = Field25519(Residue::new(&U256::from_be_hex(
+      "0000000000000000000000000000000000000000000000000000000000000003",
+    )));
+    const G_Y: Field25519 = Field25519(Residue::new(&U256::from_be_hex(
+      "537b74d97ac0721cbd92668350205f0759003bddc586a5dcd243e639e3183ef4",
+    )));
+    const B: Field25519 = Field25519(Residue::new(&U256::from_be_hex(
+      "22e8c739b0ea70b8be94a76b3ebb7b3b043f6f384113bf3522b49ee1edd73ad4",
+    )));
+  }
+
+  curve!(HelioseleneField, Field25519, HeliosPoint, HeliosParams);
 
   #[test]
   fn test_helios() {
@@ -422,14 +432,21 @@ pub use helios::HeliosPoint;
 
 mod selene {
   use super::*;
-  curve!(
-    Field25519,
-    HelioseleneField,
-    SelenePoint,
-    "70127713695876c17f51bba595ffe279f3944bdf06ae900e68de0983cb5a4558",
-    "0000000000000000000000000000000000000000000000000000000000000001",
-    "7a19d927b85cca9257c93177455c825f938bb198c8f09b37741e0aa6a1d3fdd2",
-  );
+
+  struct SeleneParams;
+  impl CurveParams<HelioseleneField> for SeleneParams {
+    const G_X: HelioseleneField = HelioseleneField(Residue::new(&U256::from_be_hex(
+      "0000000000000000000000000000000000000000000000000000000000000001",
+    )));
+    const G_Y: HelioseleneField = HelioseleneField(Residue::new(&U256::from_be_hex(
+      "7a19d927b85cca9257c93177455c825f938bb198c8f09b37741e0aa6a1d3fdd2",
+    )));
+    const B: HelioseleneField = HelioseleneField(Residue::new(&U256::from_be_hex(
+      "70127713695876c17f51bba595ffe279f3944bdf06ae900e68de0983cb5a4558",
+    )));
+  }
+
+  curve!(Field25519, HelioseleneField, SelenePoint, SeleneParams);
 
   #[test]
   fn test_selene() {
