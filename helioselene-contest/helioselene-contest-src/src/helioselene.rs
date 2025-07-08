@@ -1,5 +1,10 @@
-use core::ops::{Add, Mul, Sub};
-use subtle::{Choice, ConditionallySelectable, ConstantTimeEq, ConstantTimeGreater};
+use core::ops::{Add, Mul, Neg, Sub};
+use rand_core::RngCore;
+use subtle::{
+  Choice, ConditionallyNegatable, ConditionallySelectable, ConstantTimeEq, ConstantTimeGreater,
+  CtOption,
+};
+use zeroize::Zeroize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Element([u64; 4]);
@@ -265,6 +270,13 @@ impl Mul for Element {
 const MASK: u64 = 1 << 63;
 
 impl Element {
+  pub const ZERO: Self = ZERO;
+  pub const ONE: Self = ONE;
+
+  pub const fn new(words: [u64; 4]) -> Self {
+    Self(words)
+  }
+
   fn pow_u64(self, exp: u64, chain: Option<Self>) -> Self {
     let mut res = chain.unwrap_or(ONE);
     for i in 0..64 {
@@ -293,6 +305,91 @@ impl Element {
   fn inverse(self) -> Self {
     self.pow(MODULUS_FERMAT)
   }
+
+  //TODO: specialize
+  pub fn square(self) -> Self {
+    self * self
+  }
+}
+
+impl From<u64> for Element {
+  fn from(value: u64) -> Self {
+    Self([value, 0, 0, 0])
+  }
+}
+
+impl Neg for Element {
+  type Output = Self;
+
+  fn neg(self) -> Self::Output {
+    ZERO - self
+  }
+}
+
+pub trait ElemExt: Sized {
+  type Repr: Copy + Default + Send + Sync + 'static + AsRef<[u8]> + AsMut<[u8]>;
+  fn random(rng: impl RngCore) -> Self;
+  fn to_repr(&self) -> Self::Repr;
+  fn from_repr(repr: Self::Repr) -> CtOption<Self>;
+  fn is_odd(&self) -> Choice;
+  fn invert(&self) -> CtOption<Self>;
+  fn double(self) -> Self;
+  fn sqrt(self) -> CtOption<Self>;
+  fn is_zero(&self) -> Choice;
+}
+
+impl ElemExt for Element {
+  type Repr = [u8; 32];
+
+  fn random(mut rng: impl RngCore) -> Self {
+    let low = [(); 4].map(|_| rng.next_u64());
+    let high = [(); 4].map(|_| rng.next_u64());
+    reduce(high, low)
+  }
+
+  fn to_repr(&self) -> Self::Repr {
+    let mut repr = [0; 32];
+    for i in 0..4 {
+      let word: [u8; 8] = self.0[i].to_le_bytes();
+      for j in 0..8 {
+        repr[i * 8 + j] = word[j]
+      }
+    }
+    repr
+  }
+
+  fn from_repr(repr: Self::Repr) -> CtOption<Self> {
+    let mut elem = ZERO;
+    let mut word_bytes = [0; 8];
+    for i in 0..4 {
+      word_bytes.clone_from_slice(&repr[i * 8..]);
+      elem.0[i] = u64::from_le_bytes(word_bytes);
+    }
+    let valid = !MODULUS.ct_gt(&elem);
+    CtOption::new(elem, valid)
+  }
+
+  fn is_odd(&self) -> Choice {
+    let lowest = self.0[0] as u8;
+    Choice::from(lowest & 1)
+  }
+
+  fn invert(&self) -> CtOption<Self> {
+    let is_zero = ZERO.ct_eq(self);
+    CtOption::new(self.inverse(), !is_zero)
+  }
+
+  fn double(self) -> Self {
+    self + self
+  }
+
+  fn sqrt(self) -> CtOption<Self> {
+    todo!()
+  }
+
+  fn is_zero(&self) -> Choice {
+    ZERO.ct_eq(self)
+  }
 }
 
 #[test]
@@ -302,6 +399,22 @@ fn test_inverse() {
     let inv = x.inverse();
     assert_eq!(x * inv, ONE);
     assert_eq!(inv.inverse(), x);
+  }
+}
+
+impl Zeroize for Element {
+  fn zeroize(&mut self) {
+    self.0[0].zeroize();
+    self.0[1].zeroize();
+    self.0[2].zeroize();
+    self.0[3].zeroize();
+  }
+}
+
+impl ConditionallyNegatable for Element {
+  fn conditional_negate(&mut self, choice: Choice) {
+    let negated = -*self;
+    self.conditional_assign(&negated, choice);
   }
 }
 

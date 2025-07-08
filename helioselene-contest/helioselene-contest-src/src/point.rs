@@ -11,7 +11,7 @@ use subtle::{Choice, CtOption, ConstantTimeEq, ConditionallySelectable, Conditio
 use crypto_bigint::{U256, modular::constant_mod::Residue};
 
 use group::{
-  ff::{Field, PrimeField, PrimeFieldBits},
+  ff::{Field, PrimeFieldBits},
   Group, GroupEncoding,
   prime::PrimeGroup,
 };
@@ -30,7 +30,8 @@ macro_rules! curve {
     $Scalar: ident,
     $Field: ident,
     $Point: ident,
-    $Params: ident
+    $Params: ident,
+    $Repr: ty
   ) => {
     const G_X: $Field = $Params::G_X;
     const G_Y: $Field = $Params::G_Y;
@@ -319,7 +320,7 @@ macro_rules! curve {
     }
 
     impl GroupEncoding for $Point {
-      type Repr = <$Field as PrimeField>::Repr;
+      type Repr = $Repr;
 
       fn from_bytes(bytes: &Self::Repr) -> CtOption<Self> {
         // Extract and clear the sign bit
@@ -374,7 +375,9 @@ macro_rules! curve {
 
     impl PrimeGroup for $Point {}
 
-    impl ec_divisors::DivisorCurve for $Point {
+    // Removed in order to not require PrimeField, can be added again
+    // when PrimeField is implemented.
+    /*impl ec_divisors::DivisorCurve for $Point {
       type FieldElement = $Field;
 
       fn a() -> Self::FieldElement {
@@ -388,12 +391,13 @@ macro_rules! curve {
         let z: Self::FieldElement = Option::from(point.z.invert())?;
         Some((point.x * z, point.y * z))
       }
-    }
+    }*/
   };
 }
 
 mod helios {
   use super::*;
+  use ff::PrimeField;
 
   struct HeliosParams;
   impl CurveParams<Field25519> for HeliosParams {
@@ -408,7 +412,7 @@ mod helios {
     )));
   }
 
-  curve!(HelioseleneField, Field25519, HeliosPoint, HeliosParams);
+  curve!(HelioseleneField, Field25519, HeliosPoint, HeliosParams, <Field25519 as PrimeField>::Repr);
 
   #[test]
   fn test_helios() {
@@ -430,8 +434,32 @@ mod helios {
 }
 pub use helios::HeliosPoint;
 
+mod selene2 {
+  use super::*;
+  use crate::helioselene::Element as HelioseleneField;
+  use crate::helioselene::ElemExt;
+
+  struct SeleneParams;
+  impl CurveParams<HelioseleneField> for SeleneParams {
+    const G_X: HelioseleneField = HelioseleneField::new([1, 0, 0, 0]);
+    //TODO
+    const G_Y: HelioseleneField = HelioseleneField::new([0, 0, 0, 0]);
+    //TODO
+    const B: HelioseleneField = HelioseleneField::new([0, 0, 0, 0]);
+  }
+
+  curve!(
+    Field25519,
+    HelioseleneField,
+    SelenePoint,
+    SeleneParams,
+    <HelioseleneField as ElemExt>::Repr
+  );
+}
+
 mod selene {
   use super::*;
+  use ff::PrimeField;
 
   struct SeleneParams;
   impl CurveParams<HelioseleneField> for SeleneParams {
@@ -445,8 +473,13 @@ mod selene {
       "70127713695876c17f51bba595ffe279f3944bdf06ae900e68de0983cb5a4558",
     )));
   }
-
-  curve!(Field25519, HelioseleneField, SelenePoint, SeleneParams);
+  curve!(
+    Field25519,
+    HelioseleneField,
+    SelenePoint,
+    SeleneParams,
+    <HelioseleneField as PrimeField>::Repr
+  );
 
   #[test]
   fn test_selene() {
@@ -466,7 +499,8 @@ mod selene {
     assert!(Option::<HelioseleneField>::from(recover_y(HelioseleneField::ZERO)).is_none());
   }
 }
-pub use selene::SelenePoint;
+// pub use selene::SelenePoint;
+pub use selene2::SelenePoint;
 
 // Checks random won't infinitely loop
 #[test]
