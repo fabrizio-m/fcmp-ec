@@ -1,4 +1,4 @@
-use core::ops::{Add, Mul, Neg, Sub};
+use core::ops::{Add, AddAssign, Mul, Neg, Sub};
 use rand_core::RngCore;
 use subtle::{
   Choice, ConditionallyNegatable, ConditionallySelectable, ConstantTimeEq, ConstantTimeGreater,
@@ -225,51 +225,86 @@ fn reduce(high: [u64; 4], mut low: [u64; 4]) -> Element {
   elem
 }
 
+#[derive(Clone, Copy, Debug)]
+struct Double(u64, u64);
+
+impl Double {
+  const MASK: u64 = 0xFFFFFFFF;
+  fn new(x: u64) -> Self {
+    Self(x & Self::MASK, x >> 32)
+  }
+  const fn zero() -> Self {
+    Self(0, 0)
+  }
+  fn carry<const N: usize>(x: [Double; N]) -> (u64, [u64; N]) {
+    let mut carry = 0;
+    let carried = x.map(|d| {
+      let Double(low, high) = d;
+      let low = low + carry;
+      let high = high + (low >> 32);
+      let low = low & Self::MASK;
+      carry = high >> 32;
+      ((high & Self::MASK) << 32) | low
+    });
+    (carry, carried)
+  }
+}
+
+impl AddAssign for Double {
+  fn add_assign(&mut self, rhs: Self) {
+    self.0.add_assign(rhs.0);
+    self.1.add_assign(rhs.1);
+  }
+}
+
+fn mul_split(a: [u64; 4], b: u64) -> ([Double; 4], Double) {
+  let (low, high) = simple_mul(a, b);
+  let low = [Double::new(low[0]), Double::new(low[1]), Double::new(low[2]), Double::new(low[3])];
+  let high = Double::new(high);
+  (low, high)
+}
+
 impl Mul for Element {
   type Output = Self;
 
   fn mul(self, rhs: Self) -> Self::Output {
     let (a, b) = (self.0, rhs.0);
     let mut res_low;
-    let mut res_high = [0, 0, 0, 0];
-    let mut half_carry = 0;
+    let mut res_high;
+    let zero = Double::zero();
     {
-      let (partial, partial_carry) = simple_mul(a, b[0]);
+      let (partial, partial_carry) = mul_split(a, b[0]);
       res_low = partial;
-      let high = [partial_carry, 0, 0, 0];
-      let c = add_assing(&mut res_high, &high);
-      debug_assert!(!c);
+      res_high = [partial_carry, zero, zero, zero];
     };
     {
-      let (partial, partial_carry) = simple_mul(a, b[1]);
-      let low = [0, partial[0], partial[1], partial[2]];
-      let carry = add_assing(&mut res_low, &low) as u8;
-      half_carry += carry as u8;
-      let high = [partial[3], partial_carry, 0, 0];
-      let c = add_assing(&mut res_high, &high);
-      //
-      debug_assert!(!c);
+      let (partial, partial_carry) = mul_split(a, b[1]);
+      res_low[1] += partial[0];
+      res_low[2] += partial[1];
+      res_low[3] += partial[2];
+      res_high[0] += partial[3];
+      res_high[1] += partial_carry;
     };
     {
-      let (partial, partial_carry) = simple_mul(a, b[2]);
-      let low = [0, 0, partial[0], partial[1]];
-      let carry = add_assing(&mut res_low, &low) as u8;
-      half_carry += carry as u8;
-      let high = [partial[2], partial[3], partial_carry, 0];
-      let c = add_assing(&mut res_high, &high);
-      debug_assert!(!c);
+      let (partial, partial_carry) = mul_split(a, b[2]);
+      res_low[2] += partial[0];
+      res_low[3] += partial[1];
+      res_high[0] += partial[2];
+      res_high[1] += partial[3];
+      res_high[2] += partial_carry;
     };
     {
-      let (partial, partial_carry) = simple_mul(a, b[3]);
-      let low = [0, 0, 0, partial[0]];
-      let carry = add_assing(&mut res_low, &low) as u8;
-      half_carry += carry as u8;
-      let high = [partial[1], partial[2], partial[3], partial_carry];
-      let c = add_assing(&mut res_high, &high);
-      debug_assert!(!c);
+      let (partial, partial_carry) = mul_split(a, b[3]);
+      res_low[3] += partial[0];
+      res_high[0] += partial[1];
+      res_high[1] += partial[2];
+      res_high[2] += partial[3];
+      res_high[3] += partial_carry;
     };
-    let c = add_assing(&mut res_high, &[half_carry as u64]);
-    debug_assert!(!c);
+    let (carry, res_low) = Double::carry(res_low);
+    res_high[0].0 += carry;
+    let (carry, res_high) = Double::carry(res_high);
+    debug_assert_eq!(carry, 0);
 
     let elem = reduce(res_high, res_low);
     debug_assert!(bool::from(MODULUS.ct_gt(&elem)));
@@ -444,81 +479,80 @@ impl ConditionallyNegatable for Element {
   }
 }
 
-/*
-mod tests {
-    use super::*;
+/*mod tests {
+  use super::*;
 
-    #[test]
-    fn test_doubles() {
-        let two = Element([2, 0, 0, 0]);
+  #[test]
+  fn test_doubles() {
+    let two = Element([2, 0, 0, 0]);
 
-        let p = 260;
-        let mut x = two;
-        for i in 0..p {
-            x = x * two;
-            if i >= (p - 10) {
-                println!("x_{i}: {:?}", x);
-            }
-        }
-        let mut x = two;
-        for i in 0..260 {
-            let ol_x = x;
-            x = x + x;
-            if i >= p {
-                assert_eq!(ol_x, x - ol_x);
-                // println!("x_{i}: {:?}", x);
-            }
-        }
+    let p = 260;
+    let mut x = two;
+    for i in 0..p {
+      x = x * two;
+      if i >= (p - 10) {
+        println!("x_{i}: {:?}", x);
+      }
     }
-
-    #[test]
-    fn test_pow_full() {
-        for i in 1..500_u64 {
-            let x = Element([i, 0, i, 0]);
-            let exp1 = i;
-            let exp2 = i.wrapping_pow(32145);
-
-            let c1 = x.pow_u64(exp1, None) * x.pow_u64(exp2, None);
-            let c2 = x.pow_u64(exp1 + exp2, None);
-            assert_eq!(c1, c2, "failed with i = {i}");
-        }
+    let mut x = two;
+    for i in 0..260 {
+      let ol_x = x;
+      x = x + x;
+      if i >= p {
+        assert_eq!(ol_x, x - ol_x);
+        // println!("x_{i}: {:?}", x);
+      }
     }
+  }
 
-    #[ignore = "for debug"]
-    #[test]
-    fn test_mul() {
-        let a = Element([7, 0, 7, 0]);
-        let b = Element([
-            2514618358437031971,
-            7144711670143738068,
-            17866140284543166071,
-            4010535337322065924,
-        ]);
+  #[test]
+  fn test_pow_full() {
+    for i in 1..500_u64 {
+      let x = Element([i, 0, i, 0]);
+      let exp1 = i;
+      let exp2 = i.wrapping_pow(32145);
 
-        println!("MOD = {:?}", MODULUS);
-        println!("a = {:?}", a);
-        println!("b = {:?}", b);
-        println!("a*b = {:?}", a * b);
-
-        println!("b*a = {:?}", b * a);
-        println!("a+a = {:?}", a + a);
-        let a2 = a + a;
-        assert!(bool::from(MODULUS.ct_gt(&a2)));
-        assert!(!bool::from(MODULUS.ct_eq(&a2)));
-        let ab = a * b;
-        let ab = ab - Element([C[0], C[1], 0, 0]);
-        println!("a*b+c = {:?}", ab);
+      let c1 = x.pow_u64(exp1, None) * x.pow_u64(exp2, None);
+      let c2 = x.pow_u64(exp1 + exp2, None);
+      assert_eq!(c1, c2, "failed with i = {i}");
     }
+  }
 
-    #[ignore = "just to find C"]
-    #[test]
-    fn find_c() {
-        let mut c = ZERO;
-        let borrow = sub_assing(&mut c.0, &MODULUS.0);
-        assert!(borrow);
-        let borrow = sub_assing(&mut c.0, &MODULUS.0);
-        assert!(!borrow);
-        println!("C: {:?}", c);
-    }
+  #[ignore = "for debug"]
+  #[test]
+  fn test_mul() {
+    let a = Element([7, 0, 7, 0]);
+    let b = Element([
+      2514618358437031971,
+      7144711670143738068,
+      17866140284543166071,
+      4010535337322065924,
+    ]);
+
+    println!("MOD = {:?}", MODULUS);
+    println!("a = {:?}", a);
+    println!("b = {:?}", b);
+    println!("a*b = {:?}", a * b);
+
+    println!("b*a = {:?}", b * a);
+    println!("a+a = {:?}", a + a);
+    let a2 = a + a;
+    assert!(bool::from(MODULUS.ct_gt(&a2)));
+    assert!(!bool::from(MODULUS.ct_eq(&a2)));
+    let ab = a * b;
+    let ab = ab - Element([C[0], C[1], 0, 0]);
+    println!("a*b+c = {:?}", ab);
+  }
+
+  #[ignore = "just to find C"]
+  #[test]
+  fn find_c() {
+    let mut c = ZERO;
+    let borrow = sub_assing(&mut c.0, &MODULUS.0);
+    assert!(borrow);
+    let borrow = sub_assing(&mut c.0, &MODULUS.0);
+    assert!(!borrow);
+    println!("C: {:?}", c);
+  }
 }
 */
