@@ -442,10 +442,18 @@ mod selene2 {
   struct SeleneParams;
   impl CurveParams<HelioseleneField> for SeleneParams {
     const G_X: HelioseleneField = HelioseleneField::new([1, 0, 0, 0]);
-    //TODO
-    const G_Y: HelioseleneField = HelioseleneField::new([0, 0, 0, 0]);
-    //TODO
-    const B: HelioseleneField = HelioseleneField::new([0, 0, 0, 0]);
+    const G_Y: HelioseleneField = HelioseleneField::new([
+      0x741E0AA6A1D3FDD2,
+      0x938BB198C8F09B37,
+      0x57C93177455C825F,
+      0x7A19D927B85CCA92,
+    ]);
+    const B: HelioseleneField = HelioseleneField::new([
+      0x68de0983cb5a4558,
+      0xf3944bdf06ae900e,
+      0x7f51bba595ffe279,
+      0x70127713695876c1,
+    ]);
   }
 
   curve!(

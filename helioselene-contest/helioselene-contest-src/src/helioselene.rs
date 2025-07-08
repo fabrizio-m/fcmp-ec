@@ -88,8 +88,8 @@ impl ConstantTimeGreater for Element {
     let gt0 = self.0[0].ct_gt(&other.0[0]);
 
     let eq3 = self.0[3].ct_eq(&other.0[3]);
-    let eq2 = self.0[2].ct_eq(&other.0[1]);
-    let eq1 = self.0[1].ct_eq(&other.0[2]);
+    let eq2 = self.0[2].ct_eq(&other.0[2]);
+    let eq1 = self.0[1].ct_eq(&other.0[1]);
 
     let c1 = gt3;
     let c2 = eq3 & gt2;
@@ -126,11 +126,13 @@ fn correct_with_carry(mut elem: [u64; 4], carry: bool) -> Element {
 
   let correct = !MODULUS.ct_gt(&elem);
   let correction = Element::conditional_select(&ZERO, &MODULUS, correct);
-  sub_assing(&mut elem.0, &correction.0);
+  let borrow = sub_assing(&mut elem.0, &correction.0);
+  debug_assert!(!borrow);
 
   let correct = !MODULUS.ct_gt(&elem);
   let correction = Element::conditional_select(&ZERO, &MODULUS, correct);
-  sub_assing(&mut elem.0, &correction.0);
+  let borrow = sub_assing(&mut elem.0, &correction.0);
+  debug_assert!(!borrow);
 
   debug_assert!(bool::from(MODULUS.ct_gt(&elem)));
   elem
@@ -148,13 +150,21 @@ impl Add for Element {
 impl Sub for Element {
   type Output = Self;
 
-  fn sub(mut self, mut rhs: Self) -> Self::Output {
+  fn sub(self, rhs: Self) -> Self::Output {
+    // if a > b: a - b + 0
+    // if a <= b: (M - b) + a
     let lhs_greater = self.ct_gt(&rhs);
-    Self::conditional_swap(&mut self, &mut rhs, !lhs_greater);
-    let borrow = sub_assing(&mut self.0, &rhs.0);
+    let equal = self.ct_eq(&rhs);
+    let lhs_gt_or_eq = lhs_greater | equal;
+
+    let mut sub = Self::conditional_select(&MODULUS, &self, lhs_gt_or_eq);
+    let borrow = sub_assing(&mut sub.0, &rhs.0);
+    let add = Self::conditional_select(&self, &ZERO, lhs_gt_or_eq);
+    let carry = add_assing(&mut sub.0, &add.0);
     debug_assert!(!borrow);
-    debug_assert!(bool::from(MODULUS.ct_gt(&self)));
-    self
+    debug_assert!(!carry);
+    debug_assert!(bool::from(MODULUS.ct_gt(&sub)));
+    sub
   }
 }
 
@@ -338,6 +348,10 @@ pub trait ElemExt: Sized {
   fn is_zero(&self) -> Choice;
 }
 
+/// (MODULUS + 1) / 4
+const SQRT_EXP: Element =
+  Element([0x1badb49c9e49f1e8, 0xefdfde0b2dd95ad6, 0xffffffffffffffff, 0x1fffffffffffffff]);
+
 impl ElemExt for Element {
   type Repr = [u8; 32];
 
@@ -362,10 +376,10 @@ impl ElemExt for Element {
     let mut elem = ZERO;
     let mut word_bytes = [0; 8];
     for i in 0..4 {
-      word_bytes.clone_from_slice(&repr[i * 8..]);
+      word_bytes.clone_from_slice(&repr[(i * 8)..(i * 8 + 8)]);
       elem.0[i] = u64::from_le_bytes(word_bytes);
     }
-    let valid = !MODULUS.ct_gt(&elem);
+    let valid = MODULUS.ct_gt(&elem);
     CtOption::new(elem, valid)
   }
 
@@ -384,11 +398,23 @@ impl ElemExt for Element {
   }
 
   fn sqrt(self) -> CtOption<Self> {
-    todo!()
+    let sqrt = self.pow(SQRT_EXP);
+    let is_sqrt = self.ct_eq(&sqrt.square());
+    CtOption::new(sqrt, is_sqrt)
   }
 
   fn is_zero(&self) -> Choice {
     ZERO.ct_eq(self)
+  }
+}
+
+#[test]
+fn test_sqrt() {
+  for i in 0..100 {
+    let x = Element([i, 34, i, 1241]);
+    let xx = x.square();
+    let sqrt = xx.sqrt().unwrap();
+    assert_eq!(xx, sqrt.square());
   }
 }
 
