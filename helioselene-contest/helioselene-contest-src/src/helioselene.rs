@@ -1,5 +1,5 @@
 use core::{
-  ops::{Add, AddAssign, Mul, Neg, Sub},
+  ops::{Add, Mul, Neg, Sub},
 };
 use rand_core::RngCore;
 use subtle::{
@@ -153,42 +153,6 @@ fn split(x: u128) -> (u64, u64) {
   (low, high)
 }
 
-fn simple_mul<const N: usize>(mut a: [u64; N], b: u64) -> ([u64; N], u64) {
-  let b = b as u128;
-  let mut carry: u64 = 0;
-  for i in 0..N {
-    let wide = (a[i] as u128) * b;
-    // considering that:
-    // (2^64 - 1)(2^64 - 1) = 2^128 - 2*2^64 + 1
-    // u64::MAX^2 fits in a u128 and there is space to
-    // add 2 u64::MAX and a 1.
-    let (low, high) = split(wide + carry as u128);
-    a[i] = low;
-    carry = high;
-  }
-  (a, carry)
-}
-
-// A should be >= 2, with lowest part being returned as [_;A], and highest as [_;2]
-// (low, high)
-fn mul2<const N: usize>(a: [u64; N], b: [u64; 2]) -> ([u64; N], [u64; 2]) {
-  let [b0, b1] = b;
-  let (mut res_low, carry1) = simple_mul(a, b0);
-  let (mut partial, carry2) = simple_mul(a, b1);
-  let mut res_high = {
-    let (h0, c) = carry1.overflowing_add(partial[N - 1]);
-    let h1 = carry2 + c as u64;
-    [h0, h1]
-  };
-  for i in 0..(N - 1) {
-    partial[N - i - 1] = partial[N - i - 1 - 1];
-  }
-  partial[0] = 0;
-  let c = add_assing(&mut res_low, &partial);
-  res_high[0] += c as u64;
-  (res_low, res_high)
-}
-
 /// Crandall reduction
 fn reduce(high: [u64; 4], mut low: [u64; 4]) -> Element {
   let (xc_low, mut xc_high) = {
@@ -212,52 +176,6 @@ fn reduce(high: [u64; 4], mut low: [u64; 4]) -> Element {
   let elem = correct_with_carry(low, carry);
   debug_assert!(bool::from(MODULUS.ct_gt(&elem)));
   elem
-}
-
-#[derive(Clone, Copy, Debug)]
-struct Double(u64, u64);
-
-impl Double {
-  const MASK: u64 = 0xFFFFFFFF;
-  fn new(x: u64) -> Self {
-    Self(x & Self::MASK, x >> 32)
-  }
-  const fn zero() -> Self {
-    Self(0, 0)
-  }
-  fn carry<const N: usize>(x: [Double; N]) -> (u64, [u64; N]) {
-    let mut carry = 0;
-    let carried = x.map(|d| {
-      let Double(low, high) = d;
-      let low = low + carry;
-      let high = high + (low >> 32);
-      let low = low & Self::MASK;
-      carry = high >> 32;
-      ((high & Self::MASK) << 32) | low
-    });
-    (carry, carried)
-  }
-}
-
-impl AddAssign for Double {
-  fn add_assign(&mut self, rhs: Self) {
-    self.0.add_assign(rhs.0);
-    self.1.add_assign(rhs.1);
-  }
-}
-
-impl AddAssign<u64> for Double {
-  fn add_assign(&mut self, rhs: u64) {
-    self.0.add_assign(rhs & Self::MASK);
-    self.1.add_assign(rhs >> 32);
-  }
-}
-
-fn mul_split(a: [u64; 4], b: u64) -> ([Double; 4], Double) {
-  let (low, high) = simple_mul(a, b);
-  let low = [Double::new(low[0]), Double::new(low[1]), Double::new(low[2]), Double::new(low[3])];
-  let high = Double::new(high);
-  (low, high)
 }
 
 /// (low,high)
@@ -502,7 +420,7 @@ impl Element {
     res
   }
 
-  fn pow(self, exp: Self) -> Self {
+  pub fn pow(self, exp: Self) -> Self {
     let mut res = ONE;
     for i in 0..4 {
       let exp = exp.0[3 - i];
