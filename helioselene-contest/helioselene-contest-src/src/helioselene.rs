@@ -291,6 +291,108 @@ fn product_scanning_4x4(a: [u64; 4], b: [u64; 4]) -> [u64; 8] {
   res
 }
 
+fn mul_u128(a: u64, b: u64) -> u128 {
+  a as u128 * b as u128
+}
+
+fn square_scanning_4x4(x: [u64; 4]) -> [u64; 8] {
+  let mut res = [0; 8];
+  let c = {
+    // 0x0
+    let x = x[0] as u128;
+    let a0b0 = x * x;
+    let (l, h) = split(a0b0);
+    res[0] = l;
+    h
+  };
+  let (cl, ch) = {
+    // (0x1,1x0)
+    let ab = mul_u128(x[0], x[1]);
+    let (l1, h1) = split(ab);
+    let (l2, h2) = split(ab + c as u128);
+    // let (l2, h2) = mul_wide_add(a[1], b[0], c);
+    let (low, ovf1) = l1.overflowing_add(l2);
+    res[1] = low;
+    let (high, ovf2) = h1.overflowing_add(h2);
+    let (high, ovf3) = high.overflowing_add(ovf1 as u64);
+    (high, ovf2 | ovf3)
+  };
+  let (cl, ch) = {
+    // 1x1, (0x2, 2x0)
+    let (l1, h1) = mul_wide(x[2], x[0]);
+    let (l2, h2) = mul_wide(x[2], x[0]);
+    let (l3, h3) = mul_wide_add(x[1], x[1], cl);
+    let (low, ovf1) = l1.overflowing_add(l2);
+    let (low, ovf2) = low.overflowing_add(l3);
+    res[2] = low;
+    let ovf_l = add_bits(ovf1, ovf2) + ch as u8;
+    let (h, ovf3) = h1.overflowing_add(h2);
+    let (h, ovf4) = h.overflowing_add(h3);
+    let (h, ovf5) = h.overflowing_add(ovf_l as u64);
+    let ovf = add_bits(ovf3, ovf4) + ovf5 as u8;
+    (h, ovf)
+  };
+  let (cl, ch) = {
+    // (0x3, 3x0), (1x2, 2x1)
+    let (l1, h1) = mul_wide(x[0], x[3]);
+    let (l2, h2) = (l1, h1);
+    let x21 = mul_u128(x[1], x[2]);
+    let (l3, h3) = split(x21);
+    let (l4, h4) = split(x21 + cl as u128);
+    let (low, ovf1) = l1.overflowing_add(l2);
+    let (low, ovf2) = low.overflowing_add(l3);
+    let (low, ovf3) = low.overflowing_add(l4);
+    res[3] = low;
+    let ovf_low = add_bits(ovf1, ovf2) + ovf3 as u8 + ch;
+    let (h, ovf1) = h1.overflowing_add(h2);
+    let (h, ovf2) = h.overflowing_add(h3);
+    let (h, ovf3) = h.overflowing_add(h4);
+    let (h, ovf4) = h.overflowing_add(ovf_low as u64);
+    let ovf_high = add_bits(ovf1, ovf2) + add_bits(ovf3, ovf4);
+    (h, ovf_high)
+  };
+  let (cl, ch) = {
+    // (1x3, 3x1), 2x2
+    let (l1, h1) = mul_wide(x[1], x[3]);
+    let (l2, h2) = (l1, h1);
+    let (l3, h3) = mul_wide_add(x[2], x[2], cl);
+    let (low, ovf1) = l1.overflowing_add(l2);
+    let (low, ovf2) = low.overflowing_add(l3);
+    res[4] = low;
+    let ovf_l = add_bits(ovf1, ovf2) + ch;
+    let (h, ovf3) = h1.overflowing_add(h2);
+    let (h, ovf4) = h.overflowing_add(h3);
+    let (h, ovf5) = h.overflowing_add(ovf_l as u64);
+    let ovf = add_bits(ovf3, ovf4) + ovf5 as u8;
+    (h, ovf)
+  };
+  let (cl, ch) = {
+    //(2x3, 3x2),
+    let x23 = mul_u128(x[2], x[3]);
+    let (l1, h1) = split(x23);
+    let (l2, h2) = split(x23 + cl as u128);
+    let (low, ovf1) = l1.overflowing_add(l2);
+    let ovf_low = ovf1 as u8 + ch;
+    res[5] = low;
+    let (h, ovf2) = h1.overflowing_add(h2);
+    let (h, ovf3) = h.overflowing_add(ovf_low as u64);
+    let ovf_high = add_bits(ovf2, ovf3);
+    (h, ovf_high)
+  };
+  let cl = {
+    //3x3
+    let (low, h) = mul_wide_add(x[3], x[3], cl);
+    res[6] = low;
+    let (h, ovf) = h.overflowing_add(ch as u64);
+    debug_assert!(!ovf);
+    h
+  };
+  {
+    res[7] = cl;
+  };
+  res
+}
+
 fn product_scanning_4x2(a: [u64; 4], b: [u64; 2]) -> [u64; 6] {
   let mut res = [0; 6];
   let c = {
@@ -409,8 +511,7 @@ impl Element {
   fn pow_u64(self, exp: u64, chain: Option<Self>) -> Self {
     let mut res = chain.unwrap_or(ONE);
     for i in 0..64 {
-      //TODO: implement square
-      res = res * res;
+      res = res.square();
       let bit = (exp & (MASK >> i)).count_ones();
       let choice = Choice::from(bit as u8);
       let mut to_multiply = ONE;
@@ -435,9 +536,15 @@ impl Element {
     self.pow(MODULUS_FERMAT)
   }
 
-  //TODO: specialize
   pub fn square(self) -> Self {
-    self * self
+    let res = square_scanning_4x4(self.0);
+    let [r0, r1, r2, r3, r4, r5, r6, r7] = res;
+    let res_low = [r0, r1, r2, r3];
+    let res_high = [r4, r5, r6, r7];
+
+    let elem = reduce(res_high, res_low);
+    debug_assert!(bool::from(MODULUS.ct_gt(&elem)));
+    elem
   }
 }
 
