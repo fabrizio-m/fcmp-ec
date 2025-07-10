@@ -1,4 +1,6 @@
-use core::ops::{Add, AddAssign, Mul, Neg, Sub};
+use core::{
+  ops::{Add, AddAssign, Mul, Neg, Sub},
+};
 use rand_core::RngCore;
 use subtle::{
   Choice, ConditionallyNegatable, ConditionallySelectable, ConstantTimeEq, ConstantTimeGreater,
@@ -82,20 +84,9 @@ impl ConstantTimeEq for Element {
 
 impl ConstantTimeGreater for Element {
   fn ct_gt(&self, other: &Self) -> Choice {
-    let gt3 = self.0[3].ct_gt(&other.0[3]);
-    let gt2 = self.0[2].ct_gt(&other.0[2]);
-    let gt1 = self.0[1].ct_gt(&other.0[1]);
-    let gt0 = self.0[0].ct_gt(&other.0[0]);
-
-    let eq3 = self.0[3].ct_eq(&other.0[3]);
-    let eq2 = self.0[2].ct_eq(&other.0[2]);
-    let eq1 = self.0[1].ct_eq(&other.0[1]);
-
-    let c1 = gt3;
-    let c2 = eq3 & gt2;
-    let c3 = eq3 & eq2 & gt1;
-    let c4 = eq3 & eq2 & eq1 & gt0;
-    c1 | c2 | c3 | c4
+    let mut copy = other.0;
+    let borrow = sub_assing(&mut copy, &self.0);
+    Choice::from(borrow as u8)
   }
 }
 
@@ -145,20 +136,13 @@ impl Sub for Element {
   type Output = Self;
 
   fn sub(self, rhs: Self) -> Self::Output {
-    // if a > b: a - b + 0
-    // if a <= b: (M - b) + a
-    let lhs_greater = self.ct_gt(&rhs);
-    let equal = self.ct_eq(&rhs);
-    let lhs_gt_or_eq = lhs_greater | equal;
-
-    let mut sub = Self::conditional_select(&MODULUS, &self, lhs_gt_or_eq);
-    let borrow = sub_assing(&mut sub.0, &rhs.0);
-    let add = Self::conditional_select(&self, &ZERO, lhs_gt_or_eq);
-    let carry = add_assing(&mut sub.0, &add.0);
-    debug_assert!(!borrow);
-    debug_assert!(!carry);
-    debug_assert!(bool::from(MODULUS.ct_gt(&sub)));
-    sub
+    let (mut a, b) = (self.0, rhs.0);
+    let borrow = sub_assing(&mut a, &b);
+    let mut copy = a;
+    add_assing(&mut copy, &MODULUS.0);
+    //TODO: check compiler doesn't get too smart here.
+    let res = if borrow { copy } else { a };
+    Element(res)
   }
 }
 
@@ -207,11 +191,22 @@ fn mul2<const N: usize>(a: [u64; N], b: [u64; 2]) -> ([u64; N], [u64; 2]) {
 
 /// Crandall reduction
 fn reduce(high: [u64; 4], mut low: [u64; 4]) -> Element {
-  let (xc_low, mut xc_high) = mul2(high, C);
+  let (xc_low, mut xc_high) = {
+    let xc = product_scanning_4x2(high, C);
+    let [l0, l1, l2, l3, l4, l5] = xc;
+    ([l0, l1, l2, l3], [l4, l5])
+  };
+
   let carry = add_assing(&mut low, &xc_low);
   // no overflow risk as xc_high has space for u64::MAX + 1;
   xc_high[0] += if carry { 1 } else { 0 };
-  let (xc_low, xc_high) = mul2(xc_high, C);
+
+  let (xc_low, xc_high) = {
+    let xc = product_scanning_2x2(xc_high, C);
+    let [l0, l1, l2, l3] = xc;
+    ([l0, l1], [l2, l3])
+  };
+
   let xc = [xc_low[0], xc_low[1], xc_high[0], xc_high[1]];
   let carry = add_assing(&mut low, &xc);
   let elem = correct_with_carry(low, carry);
@@ -374,6 +369,95 @@ fn product_scanning_4x4(a: [u64; 4], b: [u64; 4]) -> [u64; 8] {
   };
   {
     res[7] = cl;
+  };
+  res
+}
+
+fn product_scanning_4x2(a: [u64; 4], b: [u64; 2]) -> [u64; 6] {
+  let mut res = [0; 6];
+  let c = {
+    // 0x0
+    let a0b0 = a[0] as u128 * b[0] as u128;
+    let (l, h) = split(a0b0);
+    res[0] = l;
+    h
+  };
+  let (cl, ch) = {
+    // 0x1,1x0
+    let (l1, h1) = mul_wide(a[0], b[1]);
+    let (l2, h2) = mul_wide_add(a[1], b[0], c);
+    let (low, ovf1) = l1.overflowing_add(l2);
+    res[1] = low;
+    let (high, ovf2) = h1.overflowing_add(h2);
+    let (high, ovf3) = high.overflowing_add(ovf1 as u64);
+    (high, ovf2 | ovf3)
+  };
+  let (cl, ch) = {
+    // 1x1, 2x0
+    let (l1, h1) = mul_wide(a[1], b[1]);
+    let (l2, h2) = mul_wide_add(a[2], b[0], cl);
+    let (low, ovf1) = l1.overflowing_add(l2);
+    res[2] = low;
+    let ovf_l = add_bits(ovf1, ch);
+    let (h, ovf3) = h1.overflowing_add(h2);
+    let (h, ovf4) = h.overflowing_add(ovf_l as u64);
+    let ovf = add_bits(ovf3, ovf4);
+    (h, ovf)
+  };
+  let (cl, ch) = {
+    // 3x0, 2x1
+    let (l1, h1) = mul_wide(a[3], b[0]);
+    let (l2, h2) = mul_wide_add(a[2], b[1], cl);
+    let (low, ovf1) = l1.overflowing_add(l2);
+    res[3] = low;
+    let ovf_low = ovf1 as u8 + ch;
+    let (h, ovf1) = h1.overflowing_add(h2);
+    let (h, ovf2) = h.overflowing_add(ovf_low as u64);
+    let ovf_high = add_bits(ovf1, ovf2);
+    (h, ovf_high)
+  };
+  let cl = {
+    // 3x1
+    let (low, h) = mul_wide_add(a[3], b[1], cl);
+    res[4] = low;
+    let ovf_l = ch;
+    let (h, ovf) = h.overflowing_add(ovf_l as u64);
+    h + ovf as u64
+  };
+  {
+    res[5] = cl;
+  };
+  res
+}
+
+fn product_scanning_2x2(a: [u64; 2], b: [u64; 2]) -> [u64; 4] {
+  let mut res = [0; 4];
+  let c = {
+    // 0x0
+    let a0b0 = a[0] as u128 * b[0] as u128;
+    let (l, h) = split(a0b0);
+    res[0] = l;
+    h
+  };
+  let (cl, ch) = {
+    // 0x1, 1x0
+    let (l1, h1) = mul_wide(a[0], b[1]);
+    let (l2, h2) = mul_wide_add(a[1], b[0], c);
+    let (low, ovf1) = l1.overflowing_add(l2);
+    res[1] = low;
+    let (high, ovf2) = h1.overflowing_add(h2);
+    let (high, ovf3) = high.overflowing_add(ovf1 as u64);
+    (high, ovf2 | ovf3)
+  };
+  let cl = {
+    // 1x1
+    let (low, h) = mul_wide_add(a[1], b[1], cl);
+    res[2] = low;
+    let (h, ovf) = h.overflowing_add(ch as u64);
+    h + ovf as u64
+  };
+  {
+    res[3] = cl;
   };
   res
 }
@@ -643,6 +727,6 @@ impl ConditionallyNegatable for Element {
 fn bench_mul() {
   for i in 0..10000 {
     let x = Element([124124, i, 214214, i]);
-    let inv = x.inverse();
+    let _inv = x.inverse();
   }
 }
