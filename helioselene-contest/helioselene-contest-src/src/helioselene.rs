@@ -116,23 +116,17 @@ const ZERO: Element = Element([0, 0, 0, 0]);
 const ONE: Element = Element([1, 0, 0, 0]);
 
 fn correct_with_carry(mut elem: [u64; 4], carry: bool) -> Element {
-  let mut correction = [0, 0];
-  let carry = Choice::from(carry as u8);
-  correction[0].conditional_assign(&C[0], carry);
-  correction[1].conditional_assign(&C[1], carry);
+  let mut correction = C;
+  let select = u64::MAX.wrapping_add(if carry { 0 } else { 1 });
+  correction[0] &= select;
+  correction[1] &= select;
   let carry = add_assing(&mut elem, &correction);
   debug_assert!(!carry);
-  let mut elem = Element(elem);
+  let elem = Element(elem);
 
-  let correct = !MODULUS.ct_gt(&elem);
-  let correction = Element::conditional_select(&ZERO, &MODULUS, correct);
-  let borrow = sub_assing(&mut elem.0, &correction.0);
-  debug_assert!(!borrow);
-
-  let correct = !MODULUS.ct_gt(&elem);
-  let correction = Element::conditional_select(&ZERO, &MODULUS, correct);
-  let borrow = sub_assing(&mut elem.0, &correction.0);
-  debug_assert!(!borrow);
+  let mut copy = elem;
+  let borrow = sub_assing(&mut copy.0, &MODULUS.0);
+  let elem = if borrow { elem } else { copy };
 
   debug_assert!(bool::from(MODULUS.ct_gt(&elem)));
   elem
@@ -168,7 +162,7 @@ impl Sub for Element {
   }
 }
 
-// (low, high)
+/// (low, high)
 fn split(x: u128) -> (u64, u64) {
   let low = x as u64;
   let high = (x >> 64) as u64;
@@ -257,6 +251,13 @@ impl AddAssign for Double {
   }
 }
 
+impl AddAssign<u64> for Double {
+  fn add_assign(&mut self, rhs: u64) {
+    self.0.add_assign(rhs & Self::MASK);
+    self.1.add_assign(rhs >> 32);
+  }
+}
+
 fn mul_split(a: [u64; 4], b: u64) -> ([Double; 4], Double) {
   let (low, high) = simple_mul(a, b);
   let low = [Double::new(low[0]), Double::new(low[1]), Double::new(low[2]), Double::new(low[3])];
@@ -264,47 +265,128 @@ fn mul_split(a: [u64; 4], b: u64) -> ([Double; 4], Double) {
   (low, high)
 }
 
+/// (low,high)
+#[inline(always)]
+fn mul_wide(a: u64, b: u64) -> (u64, u64) {
+  let ab = a as u128 * b as u128;
+  split(ab)
+}
+
+/// (low,high)
+/// a * b + c
+#[inline(always)]
+fn mul_wide_add(a: u64, b: u64, c: u64) -> (u64, u64) {
+  let ab = a as u128 * b as u128 + c as u128;
+  split(ab)
+}
+
+#[inline(always)]
+fn add_bits(a: bool, b: bool) -> u8 {
+  a as u8 + b as u8
+}
+
+fn product_scanning_4x4(a: [u64; 4], b: [u64; 4]) -> [u64; 8] {
+  let mut res = [0; 8];
+  let c = {
+    // 0x0
+    let a0b0 = a[0] as u128 * b[0] as u128;
+    let (l, h) = split(a0b0);
+    res[0] = l;
+    h
+  };
+  let (cl, ch) = {
+    // 0x1,1x0
+    let (l1, h1) = mul_wide(a[0], b[1]);
+    let (l2, h2) = mul_wide_add(a[1], b[0], c);
+    let (low, ovf1) = l1.overflowing_add(l2);
+    res[1] = low;
+    let (high, ovf2) = h1.overflowing_add(h2);
+    let (high, ovf3) = high.overflowing_add(ovf1 as u64);
+    (high, ovf2 | ovf3)
+  };
+  let (cl, ch) = {
+    // 1x1, 0x2, 2x0
+    let (l1, h1) = mul_wide(a[1], b[1]);
+    let (l2, h2) = mul_wide(a[0], b[2]);
+    let (l3, h3) = mul_wide_add(a[2], b[0], cl);
+    let (low, ovf1) = l1.overflowing_add(l2);
+    let (low, ovf2) = low.overflowing_add(l3);
+    res[2] = low;
+    let ovf_l = add_bits(ovf1, ovf2) + ch as u8;
+    let (h, ovf3) = h1.overflowing_add(h2);
+    let (h, ovf4) = h.overflowing_add(h3);
+    let (h, ovf5) = h.overflowing_add(ovf_l as u64);
+    let ovf = add_bits(ovf3, ovf4) + ovf5 as u8;
+    (h, ovf)
+  };
+  let (cl, ch) = {
+    // 0x3, 3x0, 1x2, 2x1
+    let (l1, h1) = mul_wide(a[0], b[3]);
+    let (l2, h2) = mul_wide(a[3], b[0]);
+    let (l3, h3) = mul_wide(a[1], b[2]);
+    let (l4, h4) = mul_wide_add(a[2], b[1], cl);
+    let (low, ovf1) = l1.overflowing_add(l2);
+    let (low, ovf2) = low.overflowing_add(l3);
+    let (low, ovf3) = low.overflowing_add(l4);
+    res[3] = low;
+    let ovf_low = add_bits(ovf1, ovf2) + ovf3 as u8 + ch;
+    let (h, ovf1) = h1.overflowing_add(h2);
+    let (h, ovf2) = h.overflowing_add(h3);
+    let (h, ovf3) = h.overflowing_add(h4);
+    let (h, ovf4) = h.overflowing_add(ovf_low as u64);
+    let ovf_high = add_bits(ovf1, ovf2) + add_bits(ovf3, ovf4);
+    (h, ovf_high)
+  };
+  let (cl, ch) = {
+    // 1x3, 3x1, 2x2
+    let (l1, h1) = mul_wide(a[1], b[3]);
+    let (l2, h2) = mul_wide(a[3], b[1]);
+    let (l3, h3) = mul_wide_add(a[2], b[2], cl);
+    let (low, ovf1) = l1.overflowing_add(l2);
+    let (low, ovf2) = low.overflowing_add(l3);
+    res[4] = low;
+    let ovf_l = add_bits(ovf1, ovf2) + ch;
+    let (h, ovf3) = h1.overflowing_add(h2);
+    let (h, ovf4) = h.overflowing_add(h3);
+    let (h, ovf5) = h.overflowing_add(ovf_l as u64);
+    let ovf = add_bits(ovf3, ovf4) + ovf5 as u8;
+    (h, ovf)
+  };
+  let (cl, ch) = {
+    //2x3, 3x2,
+    let (l1, h1) = mul_wide(a[2], b[3]);
+    let (l2, h2) = mul_wide_add(a[3], b[2], cl);
+    let (low, ovf1) = l1.overflowing_add(l2);
+    let ovf_low = ovf1 as u8 + ch;
+    res[5] = low;
+    let (h, ovf2) = h1.overflowing_add(h2);
+    let (h, ovf3) = h.overflowing_add(ovf_low as u64);
+    let ovf_high = add_bits(ovf2, ovf3);
+    (h, ovf_high)
+  };
+  let cl = {
+    //3x3
+    let (low, h) = mul_wide_add(a[3], b[3], cl);
+    res[6] = low;
+    let (h, ovf) = h.overflowing_add(ch as u64);
+    debug_assert!(!ovf);
+    h
+  };
+  {
+    res[7] = cl;
+  };
+  res
+}
+
 impl Mul for Element {
   type Output = Self;
 
   fn mul(self, rhs: Self) -> Self::Output {
     let (a, b) = (self.0, rhs.0);
-    let mut res_low;
-    let mut res_high;
-    let zero = Double::zero();
-    {
-      let (partial, partial_carry) = mul_split(a, b[0]);
-      res_low = partial;
-      res_high = [partial_carry, zero, zero, zero];
-    };
-    {
-      let (partial, partial_carry) = mul_split(a, b[1]);
-      res_low[1] += partial[0];
-      res_low[2] += partial[1];
-      res_low[3] += partial[2];
-      res_high[0] += partial[3];
-      res_high[1] += partial_carry;
-    };
-    {
-      let (partial, partial_carry) = mul_split(a, b[2]);
-      res_low[2] += partial[0];
-      res_low[3] += partial[1];
-      res_high[0] += partial[2];
-      res_high[1] += partial[3];
-      res_high[2] += partial_carry;
-    };
-    {
-      let (partial, partial_carry) = mul_split(a, b[3]);
-      res_low[3] += partial[0];
-      res_high[0] += partial[1];
-      res_high[1] += partial[2];
-      res_high[2] += partial[3];
-      res_high[3] += partial_carry;
-    };
-    let (carry, res_low) = Double::carry(res_low);
-    res_high[0].0 += carry;
-    let (carry, res_high) = Double::carry(res_high);
-    debug_assert_eq!(carry, 0);
+    let res = product_scanning_4x4(a, b);
+    let [r0, r1, r2, r3, r4, r5, r6, r7] = res;
+    let res_low = [r0, r1, r2, r3];
+    let res_high = [r4, r5, r6, r7];
 
     let elem = reduce(res_high, res_low);
     debug_assert!(bool::from(MODULUS.ct_gt(&elem)));
@@ -556,3 +638,11 @@ impl ConditionallyNegatable for Element {
   }
 }
 */
+
+#[test]
+fn bench_mul() {
+  for i in 0..10000 {
+    let x = Element([124124, i, 214214, i]);
+    let inv = x.inverse();
+  }
+}
