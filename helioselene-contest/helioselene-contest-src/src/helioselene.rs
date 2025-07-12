@@ -532,7 +532,7 @@ impl Element {
 
   /// Using Fermat's Little Theorem for simplicity, the EEA may
   /// be better for performance.
-  fn inverse(self) -> Self {
+  fn inverse_fermat(self) -> Self {
     self.pow(MODULUS_FERMAT)
   }
 
@@ -546,6 +546,80 @@ impl Element {
     debug_assert!(bool::from(MODULUS.ct_gt(&elem)));
     elem
   }
+  const TWO_INV: Element =
+    Element([0x375b69393c93e3d0, 0xdfbfbc165bb2b5ac, 0xffffffffffffffff, 0x3fffffffffffffff]);
+
+  fn halve(self) -> Self {
+    let (even, borrow) = shift(self);
+    let odd = even + Self::TWO_INV;
+    if borrow {
+      odd
+    } else {
+      even
+    }
+  }
+
+  fn is_even(&self) -> bool {
+    self.0[0] & 0x1 == 0
+  }
+
+  // plus-minus inversion method adapted for constant time
+  fn inverse(self) -> Self {
+    let mut a = self;
+    let mut b = MODULUS;
+    let mut u = (ONE, ZERO);
+    //TODO: make constant time
+    for _ in 0..(256 * 2 + 4) {
+      if bool::from(a.ct_eq(&ZERO)) {
+        break;
+      }
+      loop {
+        if !a.is_even() {
+          break;
+        }
+        let (new_a, overflow) = shift(a);
+        a = new_a;
+        u.0 = u.0.halve();
+        debug_assert!(!overflow);
+      }
+
+      if bool::from(b.ct_gt(&a)) {
+        std::mem::swap(&mut a, &mut b);
+        std::mem::swap(&mut u.0, &mut u.1);
+      }
+
+      let ab = a + b;
+      let plus = (ab.0[0] & 0b11) == 0;
+
+      if plus {
+        let (new_a, overflow) = shift(ab);
+        a = new_a;
+        debug_assert!(!overflow);
+        u.0 = (u.0 + u.1).halve();
+      } else {
+        let (new_a, overflow) = shift(a - b);
+        a = new_a;
+        debug_assert!(!overflow);
+        u.0 = (u.0 - u.1).halve();
+      }
+    }
+
+    if b.0[0] == 1 {
+      u.1
+    } else {
+      u.1.neg()
+    }
+  }
+}
+
+fn shift(mut x: Element) -> (Element, bool) {
+  let low_bit = (x.0[0] & 0x1) == 1;
+  for i in 0..3 {
+    x.0[i] >>= 1;
+    x.0[i] |= x.0[i + 1] << 63;
+  }
+  x.0[3] >>= 1;
+  (x, low_bit)
 }
 
 impl From<u64> for Element {
@@ -648,9 +722,19 @@ fn test_sqrt() {
 fn test_inverse() {
   for i in 1..200 {
     let x = Element([i, 0, i, 0]);
-    let inv = x.inverse();
+    let inv = x.inverse_fermat();
     assert_eq!(x * inv, ONE);
-    assert_eq!(inv.inverse(), x);
+    assert_eq!(inv.inverse_fermat(), x);
+  }
+}
+
+#[test]
+fn test_inverse_fast() {
+  for i in 1..200 {
+    let x = Element([i, 0, i, 0]);
+    let inv_good = x.inverse_fermat();
+    let inv_fast = x.inverse();
+    assert_eq!(inv_good, inv_fast);
   }
 }
 
@@ -748,10 +832,25 @@ impl ConditionallyNegatable for Element {
 }
 */
 
+// (x + 1)2 = x/2 + 1/2
+
+#[test]
+fn halving() {
+  // println!("2 inv: {:x?}", (Element([2, 0, 0, 0])).inverse());
+  for i in 1..1000 {
+    let x = [i, 23, i, i];
+    let x = Element(x);
+    // println!("x: {:?}", x);
+    assert_eq!(x, (x * Element::TWO_INV) * (ONE + ONE));
+    // println!("diff {:x?}", (x * Element::TWO_INV) - x.halve());
+    assert_eq!(x.halve(), x * Element::TWO_INV);
+  }
+}
+
 #[test]
 fn bench_mul() {
   for i in 0..10000 {
     let x = Element([124124, i, 214214, i]);
-    let _inv = x.inverse();
+    let _inv = x.inverse_fermat();
   }
 }
