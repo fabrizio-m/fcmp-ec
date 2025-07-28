@@ -118,9 +118,9 @@ fn correct_with_carry(mut elem: [u64; 4], carry: bool) -> Element {
   let mut copy = elem;
   let borrow = sub_assing(&mut copy.0, &MODULUS.0);
   let elem = if borrow { elem } else { copy };
-  let mut copy = elem;
-  let borrow = sub_assing(&mut copy.0, &MODULUS.0);
-  let elem = if borrow { elem } else { copy };
+  // let mut copy = elem;
+  // let borrow = sub_assing(&mut copy.0, &MODULUS.0);
+  // let elem = if borrow { elem } else { copy };
 
   debug_assert!(bool::from(MODULUS.ct_gt(&elem)));
   elem
@@ -181,6 +181,18 @@ fn reduce(high: [u64; 4], mut low: [u64; 4]) -> Element {
   elem
 }
 
+fn reduce_simple(x: [u64; 5]) -> Element {
+  let high = x[4];
+  let (r0, c) = mul_wide_add(C[0], high, x[0]);
+  let (r1, c) = mul_wide_add2(C[1], high, x[1], c);
+  let (r2, c) = x[2].overflowing_add(c);
+  let (r3, c) = x[3].overflowing_add(c as u64);
+  let x = [r0, r1, r2, r3];
+  let elem = correct_with_carry(x, c);
+  debug_assert!(bool::from(MODULUS.ct_gt(&elem)));
+  elem
+}
+
 /// (low,high)
 #[inline(always)]
 fn mul_wide(a: u64, b: u64) -> (u64, u64) {
@@ -193,6 +205,13 @@ fn mul_wide(a: u64, b: u64) -> (u64, u64) {
 #[inline(always)]
 fn mul_wide_add(a: u64, b: u64, c: u64) -> (u64, u64) {
   let ab = a as u128 * b as u128 + c as u128;
+  split(ab)
+}
+
+#[inline(always)]
+/// a * b + c +d
+fn mul_wide_add2(a: u64, b: u64, c: u64, d: u64) -> (u64, u64) {
+  let ab = a as u128 * b as u128 + c as u128 + d as u128;
   split(ab)
 }
 
@@ -453,6 +472,39 @@ fn product_scanning_4x2(a: [u64; 4], b: [u64; 2]) -> [u64; 6] {
   res
 }
 
+fn product_scanning_4x1(a: [u64; 4], b: u64) -> [u64; 5] {
+  let mut res = [0; 5];
+  let c = {
+    // 0x0
+    let a0b0 = a[0] as u128 * b as u128;
+    let (l, h) = split(a0b0);
+    res[0] = l;
+    h
+  };
+  let c = {
+    // 1x0
+    let (low, high) = mul_wide_add(a[1], b, c);
+    res[1] = low;
+    high
+  };
+  let c = {
+    //  2x0
+    let (low, high) = mul_wide_add(a[2], b, c);
+    res[2] = low;
+    high
+  };
+  let c = {
+    // 3x0
+    let (low, high) = mul_wide_add(a[3], b, c);
+    res[3] = low;
+    high
+  };
+  {
+    res[4] = c;
+  };
+  res
+}
+
 fn product_scanning_2x2(a: [u64; 2], b: [u64; 2]) -> [u64; 4] {
   let mut res = [0; 4];
   let c = {
@@ -609,8 +661,8 @@ impl Element {
   }
 
   fn simple_mul(self, rhs: u64) -> Self {
-    let rhs = Self([rhs, 0, 0, 0]);
-    self * rhs
+    let x = product_scanning_4x1(self.0, rhs);
+    reduce_simple(x)
   }
 
   /// Compress A into a single u64 made up of the highest 33 bits, and the lowest 31.
