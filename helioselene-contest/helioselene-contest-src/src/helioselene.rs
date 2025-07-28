@@ -118,6 +118,9 @@ fn correct_with_carry(mut elem: [u64; 4], carry: bool) -> Element {
   let mut copy = elem;
   let borrow = sub_assing(&mut copy.0, &MODULUS.0);
   let elem = if borrow { elem } else { copy };
+  let mut copy = elem;
+  let borrow = sub_assing(&mut copy.0, &MODULUS.0);
+  let elem = if borrow { elem } else { copy };
 
   debug_assert!(bool::from(MODULUS.ct_gt(&elem)));
   elem
@@ -570,37 +573,31 @@ impl Element {
     let mut u = (ONE, ZERO);
     //TODO: make constant time
     for _ in 0..(256 * 2 + 4) {
-      if bool::from(a.ct_eq(&ZERO)) {
-        break;
-      }
-      loop {
-        if !a.is_even() {
-          break;
-        }
+      if a.is_even() {
         let (new_a, overflow) = shift(a);
         a = new_a;
         u.0 = u.0.halve();
         debug_assert!(!overflow);
-      }
-
-      if bool::from(b.ct_gt(&a)) {
-        std::mem::swap(&mut a, &mut b);
-        std::mem::swap(&mut u.0, &mut u.1);
-      }
-
-      let ab = a + b;
-      let plus = (ab.0[0] & 0b11) == 0;
-
-      if plus {
-        let (new_a, overflow) = shift(ab);
-        a = new_a;
-        debug_assert!(!overflow);
-        u.0 = (u.0 + u.1).halve();
       } else {
-        let (new_a, overflow) = shift(a - b);
-        a = new_a;
-        debug_assert!(!overflow);
-        u.0 = (u.0 - u.1).halve();
+        if bool::from(b.ct_gt(&a)) {
+          std::mem::swap(&mut a, &mut b);
+          std::mem::swap(&mut u.0, &mut u.1);
+        }
+
+        let ab = a + b;
+        let plus = (ab.0[0] & 0b11) == 0;
+
+        if plus {
+          let (new_a, overflow) = shift(ab);
+          a = new_a;
+          debug_assert!(!overflow);
+          u.0 = (u.0 + u.1).halve();
+        } else {
+          let (new_a, overflow) = shift(a - b);
+          a = new_a;
+          debug_assert!(!overflow);
+          u.0 = (u.0 - u.1).halve();
+        }
       }
     }
 
@@ -609,6 +606,146 @@ impl Element {
     } else {
       u.1.neg()
     }
+  }
+
+  fn simple_mul(self, rhs: u64) -> Self {
+    let rhs = Self([rhs, 0, 0, 0]);
+    self * rhs
+  }
+
+  /// Compress A into a single u64 made up of the highest 33 bits, and the lowest 31.
+  /// Same with B, but the highest bits are taken from the same range as A.
+  /// B is expected to be smaller than A.
+  /// When bits(A) < 64 this is equivalent to just take the lowest limb.
+  fn compress(mut a: Self, mut b: Self) -> (u64, u64) {
+    let swap = bool::from(b.ct_gt(&a));
+    if swap {
+      std::mem::swap(&mut a, &mut b);
+    }
+    debug_assert!(!bool::from(b.ct_gt(&a)));
+    let (a, b) = (a.0, b.0);
+    let small_a = ((1 << 31) - 1) & a[0];
+    let small_b = ((1 << 31) - 1) & b[0];
+
+    let mut ab = (a[0] >> 31, b[0] >> 31);
+
+    for i in 0..3 {
+      let non_zero = a[i + 1].ct_ne(&0);
+      let high_bits = u64::BITS - a[i + 1].leading_zeros();
+
+      let high = a[i + 1] >> (high_bits.saturating_sub(33));
+      let high = high << (33_u32.saturating_sub(high_bits));
+      let a = high | ((a[i] >> 32) >> (high_bits.saturating_sub(1)));
+
+      let high = b[i + 1] >> (high_bits.saturating_sub(33));
+      let high = high << (33_u32.saturating_sub(high_bits));
+      let b = high | ((b[i] >> 32) >> (high_bits.saturating_sub(1)));
+
+      ab.0.conditional_assign(&a, non_zero);
+      ab.1.conditional_assign(&b, non_zero);
+    }
+
+    let mut a = small_a | (ab.0 << 31);
+    let mut b = small_b | (ab.1 << 31);
+    if swap {
+      std::mem::swap(&mut a, &mut b);
+    }
+    (a, b)
+  }
+
+  /// The inverse of 2^31
+  const fn inverse_shift() -> Self {
+    Element([9242182130291577655, 15289291369412052737, 18446744073709551615, 6265751320813109247])
+  }
+
+  /// 2^(-31 * 16)
+  const fn inverse_shift16() -> Self {
+    Element([10262430887218310098, 7186200574519028691, 16424616000314463248, 6329167355612373177])
+  }
+
+  fn gcd_word(a: Self, b: Self) -> (Self, Self, [i64; 4]) {
+    let (old_a, old_b) = (a, b);
+    let (mut a, mut b) = Self::compress(old_a, old_b);
+    // (u.0,u.1) <- (f0 * u.0 + g0 * u.1, f1 * u.0 + g1 * u.1)
+    let [mut f0, mut g0, mut f1, mut g1] = [1i64, 0, 0, 1];
+    for _ in 0..31 {
+      if a % 2 == 0 {
+        let new_a = a >> 1;
+        a = new_a;
+        f1 <<= 1;
+        g1 <<= 1;
+        continue;
+      }
+
+      if bool::from(b.ct_gt(&a)) {
+        std::mem::swap(&mut a, &mut b);
+        std::mem::swap(&mut f0, &mut f1);
+        std::mem::swap(&mut g0, &mut g1);
+      }
+
+      let new_a = (a - b) >> 1;
+      a = new_a;
+
+      f0 -= f1;
+      g0 -= g1;
+      f1 <<= 1;
+      g1 <<= 1;
+    }
+
+    let shift = Self::inverse_shift();
+
+    let mut a = (old_a * f0 + old_b * g0) * shift;
+    let neg_a = -a;
+    let negate = a.ct_gt(&neg_a);
+    a.conditional_assign(&neg_a, negate);
+    f0.conditional_negate(negate);
+    g0.conditional_negate(negate);
+
+    let mut b = (old_a * f1 + old_b * g1) * shift;
+    let neg_b = -b;
+    let negate = b.ct_gt(&neg_b);
+    b.conditional_assign(&neg_b, negate);
+    f1.conditional_negate(negate);
+    g1.conditional_negate(negate);
+
+    (a, b, [f0, g0, f1, g1])
+  }
+
+  fn inverse_fast(self) -> Self {
+    //https://eprint.iacr.org/2020/972.pdf
+    let mut a = self;
+    let mut b = MODULUS;
+    let mut u = (ONE, ZERO);
+    for _ in 0..16 {
+      let (new_a, new_b, factors) = Self::gcd_word(a, b);
+      a = new_a;
+      b = new_b;
+      let [f0, g0, f1, g1] = factors;
+      let new_u0 = u.0 * f0 + u.1 * g0;
+      let new_u1 = u.0 * f1 + u.1 * g1;
+      u = (new_u0, new_u1);
+    }
+    let shift = Self::inverse_shift16();
+    let u = u.1 * shift;
+    debug_assert_eq!(b, ONE);
+    u
+  }
+}
+
+impl Mul<u64> for Element {
+  type Output = Self;
+
+  fn mul(self, rhs: u64) -> Self::Output {
+    self.simple_mul(rhs)
+  }
+}
+impl Mul<i64> for Element {
+  type Output = Self;
+
+  fn mul(mut self, rhs: i64) -> Self::Output {
+    let negative = rhs < 0;
+    self.conditional_negate(Choice::from(negative as u8));
+    self * rhs.unsigned_abs()
   }
 }
 
@@ -690,7 +827,7 @@ impl ElemExt for Element {
 
   fn invert(&self) -> CtOption<Self> {
     let is_zero = ZERO.ct_eq(self);
-    CtOption::new(self.inverse(), !is_zero)
+    CtOption::new(self.inverse_fast(), !is_zero)
   }
 
   fn double(self) -> Self {
@@ -730,11 +867,13 @@ fn test_inverse() {
 
 #[test]
 fn test_inverse_fast() {
-  for i in 1..200 {
+  for i in 1..255 {
     let x = Element([i, 0, i, 0]);
     let inv_good = x.inverse_fermat();
-    let inv_fast = x.inverse();
+    let inv_fast = x.inverse_fast();
     assert_eq!(inv_good, inv_fast);
+    let new_x = inv_fast.inverse_fast();
+    assert_eq!(new_x, x);
   }
 }
 
@@ -852,5 +991,20 @@ fn bench_mul() {
   for i in 0..10000 {
     let x = Element([124124, i, 214214, i]);
     let _inv = x.inverse_fermat();
+  }
+}
+
+#[test]
+fn compress() {
+  // checking Element::compress works as expected.
+  let mut a: u64 = 3;
+  for _ in 0..100 {
+    a = a.wrapping_mul(a);
+    let mut x = Element([a | 1 << 63, 0, 0, 0]);
+    for _ in 0..192 {
+      let (aa, _) = Element::compress(x, ZERO);
+      assert_eq!(aa >> 32, (a | (1 << 63)) >> 32);
+      x = x.double();
+    }
   }
 }
