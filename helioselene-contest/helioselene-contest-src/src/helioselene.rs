@@ -209,9 +209,21 @@ fn mul_wide_add(a: u64, b: u64, c: u64) -> (u64, u64) {
 }
 
 #[inline(always)]
-/// a * b + c +d
+/// a * b + c + d
 fn mul_wide_add2(a: u64, b: u64, c: u64, d: u64) -> (u64, u64) {
   let ab = a as u128 * b as u128 + c as u128 + d as u128;
+  split(ab)
+}
+
+/// a * b + c[0] + c[1] .. + c[N-1]
+/// May overflow in general, should be used only when some operand
+/// is a constant which guarantees overflow won't happen.
+#[inline(always)]
+fn mul_wide_add_unchecked<const N: usize>(a: u64, b: u64, c: [u64; N]) -> (u64, u64) {
+  let mut ab = a as u128 * b as u128;
+  for c in c {
+    ab += c as u128;
+  }
   split(ab)
 }
 
@@ -537,17 +549,173 @@ fn product_scanning_2x2(a: [u64; 2], b: [u64; 2]) -> [u64; 4] {
   res
 }
 
+#[inline(always)]
+pub fn hybrid_scanning(a: [u64; 4], b: [u64; 4]) -> (bool, [u64; 4]) {
+  let mut res = [0; 4];
+  // carry of res[2], which should be added into res[3]
+  let mut carry2;
+  // carry of res[3], to be multiplied by C and added to the result.
+  let carry3;
+  let c = {
+    // 0x0
+    let a0b0 = a[0] as u128 * b[0] as u128;
+    let (l, h) = split(a0b0);
+    res[0] = l;
+    h
+  };
+  let (cl, ch) = {
+    // 0x1,1x0
+    let (l1, h1) = mul_wide(a[0], b[1]);
+    let (l2, h2) = mul_wide_add(a[1], b[0], c);
+    let (low, ovf1) = l1.overflowing_add(l2);
+    res[1] = low;
+    let (high, ovf2) = h1.overflowing_add(h2);
+    let (high, ovf3) = high.overflowing_add(ovf1 as u64);
+    (high, ovf2 | ovf3)
+  };
+  let (cl, ch) = {
+    // 1x1, 0x2, 2x0
+    let (l1, h1) = mul_wide(a[1], b[1]);
+    let (l2, h2) = mul_wide(a[0], b[2]);
+    let (l3, h3) = mul_wide_add(a[2], b[0], cl);
+    let (low, ovf1) = l1.overflowing_add(l2);
+    let (low, ovf2) = low.overflowing_add(l3);
+    res[2] = low;
+    let ovf_l = add_bits(ovf1, ovf2) + ch as u8;
+    let (h, ovf3) = h1.overflowing_add(h2);
+    let (h, ovf4) = h.overflowing_add(h3);
+    let (h, ovf5) = h.overflowing_add(ovf_l as u64);
+    let ovf = add_bits(ovf3, ovf4) + ovf5 as u8;
+    (h, ovf)
+  };
+  let (cl, ch) = {
+    // 0x3, 3x0, 1x2, 2x1
+    let (l1, h1) = mul_wide(a[0], b[3]);
+    let (l2, h2) = mul_wide(a[3], b[0]);
+    let (l3, h3) = mul_wide(a[1], b[2]);
+    let (l4, h4) = mul_wide_add(a[2], b[1], cl);
+    let (low, ovf1) = l1.overflowing_add(l2);
+    let (low, ovf2) = low.overflowing_add(l3);
+    let (low, ovf3) = low.overflowing_add(l4);
+    res[3] = low;
+    let ovf_low = add_bits(ovf1, ovf2) + ovf3 as u8 + ch;
+    let (h, ovf1) = h1.overflowing_add(h2);
+    let (h, ovf2) = h.overflowing_add(h3);
+    let (h, ovf3) = h.overflowing_add(h4);
+    let (h, ovf4) = h.overflowing_add(ovf_low as u64);
+    let ovf_high = add_bits(ovf1, ovf2) + add_bits(ovf3, ovf4);
+    (h, ovf_high)
+  };
+  let (cl, ch) = {
+    // 1x3, 3x1, 2x2
+    let (l1, h1) = mul_wide(a[1], b[3]);
+    let (l2, h2) = mul_wide(a[3], b[1]);
+    let (l3, h3) = mul_wide_add(a[2], b[2], cl);
+    let (low, ovf1) = l1.overflowing_add(l2);
+    let (low, ovf2) = low.overflowing_add(l3);
+    let res_4 = low;
+    {
+      let (r0, h) = mul_wide_add(res_4, C[0], res[0]);
+      res[0] = r0;
+      let (r1, h) = mul_wide_add2(res_4, C[1], res[1], h);
+      res[1] = r1;
+      let (r2, h) = res[2].overflowing_add(h);
+      res[2] = r2;
+      // carries[2] = h as u8;
+      carry2 = h;
+    }
+    let ovf_l = add_bits(ovf1, ovf2) + ch;
+    let (h, ovf3) = h1.overflowing_add(h2);
+    let (h, ovf4) = h.overflowing_add(h3);
+    let (h, ovf5) = h.overflowing_add(ovf_l as u64);
+    let ovf = add_bits(ovf3, ovf4) + ovf5 as u8;
+    (h, ovf)
+  };
+  let (cl, ch) = {
+    //2x3, 3x2,
+    let (l1, h1) = mul_wide(a[2], b[3]);
+    let (l2, h2) = mul_wide_add(a[3], b[2], cl);
+    let (low, ovf1) = l1.overflowing_add(l2);
+    let ovf_low = ovf1 as u8 + ch;
+    let res_5 = low;
+    {
+      let (r1, h) = mul_wide_add(res_5, C[0], res[1]);
+      res[1] = r1;
+      let (r2, h) = mul_wide_add2(res_5, C[1], res[2], h);
+      res[2] = r2;
+      let (r3, h1) = res[3].overflowing_add(h);
+      let (r3, h2) = r3.overflowing_add(carry2 as u64);
+      res[3] = r3;
+      carry3 = h1 | h2;
+    }
+    let (h, ovf2) = h1.overflowing_add(h2);
+    let (h, ovf3) = h.overflowing_add(ovf_low as u64);
+    let ovf_high = add_bits(ovf2, ovf3);
+    (h, ovf_high)
+  };
+  let cl = {
+    //3x3
+    let (low, h) = mul_wide_add(a[3], b[3], cl);
+    let res_6 = low;
+    {
+      //2x0c
+      let (r2, h) = mul_wide_add(res_6, C[0], res[2]);
+      let (r3, hc) = mul_wide_add2(res_6, C[1], res[3], h);
+      res[3] = r3;
+
+      let (r0, h) = mul_wide_add(hc, C[0], res[0]);
+      res[0] = r0;
+      let (r1, h) = mul_wide_add2(hc, C[1], res[1], h);
+      res[1] = r1;
+      let (r2, h) = r2.overflowing_add(h);
+      res[2] = r2;
+      carry2 = h;
+    }
+    let (h, ovf) = h.overflowing_add(ch as u64);
+    debug_assert!(!ovf);
+    h
+  };
+  let b = {
+    let res_7 = cl;
+
+    //7x0 - 4 = 3x0
+    let (r3, h) = mul_wide_add2(res_7, C[0], res[3], carry2 as u64);
+    res[3] = r3;
+    // 3x1
+    let (r4, r5) = mul_wide_add2(res_7, C[1], h, carry3 as u64);
+
+    //0x0
+    let (r0, h) = mul_wide_add(r4, C[0], res[0]);
+    res[0] = r0;
+    //0x1 1x0
+    let (r11, h1) = mul_wide_add2(r5, C[0], h, res[1]);
+    let (r12, h2) = mul_wide(r4, C[1]);
+    let (r1, ovb) = r11.overflowing_add(r12);
+    res[1] = r1;
+    //1x1
+    // as C[1] < u64::MAX, we can add a third value without overflow.
+    let (r2, r3) = mul_wide_add_unchecked(r5, C[1], [h1, h2, ovb as u64, res[2]]);
+    res[2] = r2;
+    let (r3, h) = r3.overflowing_add(res[3]);
+    res[3] = r3;
+    h
+  };
+  (b, res)
+}
+
+pub fn mul_hybrid(a: Element, b: Element) -> Element {
+  let (a, b) = (a.0, b.0);
+  let (b, r) = hybrid_scanning(a, b);
+  correct_with_carry(r, b)
+}
+
 impl Mul for Element {
   type Output = Self;
 
   fn mul(self, rhs: Self) -> Self::Output {
     let (a, b) = (self.0, rhs.0);
-    let res = product_scanning_4x4(a, b);
-    let [r0, r1, r2, r3, r4, r5, r6, r7] = res;
-    let res_low = [r0, r1, r2, r3];
-    let res_high = [r4, r5, r6, r7];
-
-    let elem = reduce(res_high, res_low);
+    let (b, r) = hybrid_scanning(a, b);
+    let elem = correct_with_carry(r, b);
     debug_assert!(bool::from(MODULUS.ct_gt(&elem)));
     elem
   }
