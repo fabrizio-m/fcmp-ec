@@ -200,6 +200,17 @@ fn mul_wide(a: u64, b: u64) -> (u64, u64) {
   split(ab)
 }
 
+#[inline(always)]
+// (low,high)
+fn add_carry(a_low: &mut u64, a_high: &mut u64, b: u64, c: bool) -> bool {
+  let (a0, c1) = a_low.overflowing_add(b);
+  let (a0, c2) = a0.overflowing_add(c as u64);
+  *a_low = a0;
+  let (a1, c) = a_high.overflowing_add(c1 as u64 + c2 as u64);
+  *a_high = a1;
+  c
+}
+
 /// (low,high)
 /// a * b + c
 #[inline(always)]
@@ -703,6 +714,215 @@ pub fn hybrid_scanning(a: [u64; 4], b: [u64; 4]) -> (bool, [u64; 4]) {
   (b, res)
 }
 
+#[inline(always)]
+/// Full modular multiplication, result < MODULUS.
+pub fn mod_product_scanning(a: [u64; 4], b: [u64; 4]) -> [u64; 4] {
+  let mut res = [0; 4];
+
+  // 0: 0x0
+  let r1 = {
+    let (l, h) = mul_wide(a[0], b[0]);
+    res[0] = l;
+    h
+  };
+
+  // 1: 1x0 0x1
+  let (r2, r3) = {
+    let (r1, r2) = mul_wide_add(a[1], b[0], r1);
+    let (r1, h) = mul_wide_add(a[0], b[1], r1);
+    res[1] = r1;
+    carrying_add(r2, h, false)
+  };
+
+  // 2: 2x0 0x2 1x1
+  let (r3, r4) = {
+    let mut r3 = r3 as u64;
+    let mut r4 = 0;
+
+    let (r2, h) = mul_wide_add(a[2], b[0], r2);
+    let _ = add_carry(&mut r3, &mut r4, h, false);
+
+    let (r2, h) = mul_wide_add(a[0], b[2], r2);
+    let _ = add_carry(&mut r3, &mut r4, h, false);
+
+    let (r2, h) = mul_wide_add(a[1], b[1], r2);
+    let _ = add_carry(&mut r3, &mut r4, h, false);
+
+    res[2] = r2;
+    (r3, r4)
+  };
+
+  // 3: 3x0 0x3 2x1 1x2
+  let (r4, r5) = {
+    let (mut r4, mut r5) = (r4, 0);
+
+    let (r3, h) = mul_wide_add(a[3], b[0], r3);
+    let _ = add_carry(&mut r4, &mut r5, h, false);
+
+    let (r3, h) = mul_wide_add(a[0], b[3], r3);
+    let _ = add_carry(&mut r4, &mut r5, h, false);
+
+    let (r3, h) = mul_wide_add(a[2], b[1], r3);
+    let _ = add_carry(&mut r4, &mut r5, h, false);
+
+    let (r3, h) = mul_wide_add(a[1], b[2], r3);
+    let _ = add_carry(&mut r4, &mut r5, h, false);
+
+    res[3] = r3;
+    (r4, r5)
+  };
+
+  // 4: 3x1 1x3 2x2
+  let (r4, r5, r6) = {
+    let (mut r5, mut r6) = (r5, 0);
+
+    let (r4, h) = mul_wide_add(a[3], b[1], r4);
+    let _ = add_carry(&mut r5, &mut r6, h, false);
+
+    let (r4, h) = mul_wide_add(a[1], b[3], r4);
+    let _ = add_carry(&mut r5, &mut r6, h, false);
+
+    let (r4, h) = mul_wide_add(a[2], b[2], r4);
+    let _ = add_carry(&mut r5, &mut r6, h, false);
+
+    (r4, r5, r6)
+  };
+
+  // 5: 3x2 2x3
+  let (r5, r6, r7) = {
+    let (mut r6, mut r7) = (r6, 0);
+
+    let (r5, h) = mul_wide_add(a[3], b[2], r5);
+    let _ = add_carry(&mut r6, &mut r7, h, false);
+
+    let (r5, h) = mul_wide_add(a[2], b[3], r5);
+    let _ = add_carry(&mut r6, &mut r7, h, false);
+
+    (r5, r6, r7)
+  };
+
+  // 6: 3x3
+  let (r6, r7) = {
+    let (r6, h) = mul_wide_add(a[3], b[3], r6);
+    // let r7 = r7.wrapping_add(h);
+    let r7 = r7 + h;
+    (r6, r7)
+  };
+
+  // First Reduction
+
+  let a = [r4, r5, r6, r7];
+
+  // 0: 0x0
+  let r1 = {
+    let (r0, r1) = mul_wide_add(a[0], C[0], res[0]);
+    res[0] = r0;
+    r1
+  };
+
+  // 1: 0x1 1x0
+  let (r2, r3) = {
+    let mut r3 = 0;
+
+    let (r1, mut r2) = mul_wide_add2(a[0], C[1], r1, res[1]);
+
+    let (r1, h) = mul_wide_add(a[1], C[0], r1);
+    let _ = add_carry(&mut r2, &mut r3, h, false);
+
+    res[1] = r1;
+    (r2, r3)
+  };
+
+  // 2: 2x0 !0x2 1x1
+  let (r3, r4) = {
+    let (mut r3, mut r4) = (r3, 0);
+
+    let (r2, h) = mul_wide_add2(a[2], C[0], r2, res[2]);
+    let _ = add_carry(&mut r3, &mut r4, h, false);
+
+    let (r2, h) = mul_wide_add(a[1], C[1], r2);
+    let _ = add_carry(&mut r3, &mut r4, h, false);
+
+    res[2] = r2;
+    (r3, r4)
+  };
+
+  // 3: 3x0 !0x3 2x1 !1x2
+  let (r4, r5) = {
+    let (mut r4, mut r5) = (r4, 0);
+
+    let (r3, h) = mul_wide_add2(a[3], C[0], r3, res[3]);
+    let _ = add_carry(&mut r4, &mut r5, h, false);
+
+    let (r3, h) = mul_wide_add(a[2], C[1], r3);
+    let _ = add_carry(&mut r4, &mut r5, h, false);
+
+    res[3] = r3;
+
+    (r4, r5)
+  };
+
+  // 4: 3x1 !1x3 !2x2
+  let (r4, r5) = {
+    let (r4, h) = mul_wide_add(a[3], C[1], r4);
+    (r4, r5 + h)
+  };
+
+  // Second Reduction
+  let a = [r4, r5];
+
+  //0: 0x0
+  let r1 = {
+    let (r0, r1) = mul_wide_add(a[0], C[0], res[0]);
+    res[0] = r0;
+    r1
+  };
+
+  //1: 0x1 1x0
+  let r2 = {
+    let (r1, r2_1) = mul_wide_add2(a[0], C[1], r1, res[1]);
+    let (r1, r2_2) = mul_wide_add(a[1], C[0], r1);
+    res[1] = r1;
+    (r2_1, r2_2)
+  };
+
+  //2: !0x2 !2x0 1x1
+  let r3 = {
+    let (r2, r3) = mul_wide_add_unchecked(a[1], C[1], [r2.0, r2.1, res[2]]);
+    res[2] = r2;
+    r3
+  };
+
+  let r4 = {
+    let (r3, r4) = carrying_add(r3, res[3], false);
+    res[3] = r3;
+    r4
+  };
+
+  // Final correction
+
+  let mut copy = res;
+  let borrow = sub_assing(&mut copy, &MODULUS.0);
+  let res = if borrow { res } else { copy };
+
+  let res = {
+    let a = r4 as u64;
+    let (r0, r1) = mul_wide_add(a, C[0], res[0]);
+    let (r1, r2) = mul_wide_add2(a, C[1], res[1], r1);
+    let (r2, r3) = carrying_add(r2, res[2], false);
+    let r3 = r3 as u64 + res[3];
+    [r0, r1, r2, r3]
+  };
+
+  let mut copy = res;
+  let borrow = sub_assing(&mut copy, &MODULUS.0);
+  if borrow {
+    res
+  } else {
+    copy
+  }
+}
+
 pub fn mul_hybrid(a: Element, b: Element) -> Element {
   let (a, b) = (a.0, b.0);
   let (b, r) = hybrid_scanning(a, b);
@@ -712,10 +932,10 @@ pub fn mul_hybrid(a: Element, b: Element) -> Element {
 impl Mul for Element {
   type Output = Self;
 
+  #[inline(always)]
   fn mul(self, rhs: Self) -> Self::Output {
     let (a, b) = (self.0, rhs.0);
-    let (b, r) = hybrid_scanning(a, b);
-    let elem = correct_with_carry(r, b);
+    let elem = Element(mod_product_scanning(a, b));
     debug_assert!(bool::from(MODULUS.ct_gt(&elem)));
     elem
   }
