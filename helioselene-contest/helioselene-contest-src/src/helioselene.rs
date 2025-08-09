@@ -1036,8 +1036,8 @@ impl Element {
         debug_assert!(!overflow);
       } else {
         if bool::from(b.ct_gt(&a)) {
-          std::mem::swap(&mut a, &mut b);
-          std::mem::swap(&mut u.0, &mut u.1);
+          core::mem::swap(&mut a, &mut b);
+          core::mem::swap(&mut u.0, &mut u.1);
         }
 
         let ab = a + b;
@@ -1077,7 +1077,7 @@ impl Element {
   fn compress(mut a: Self, mut b: Self) -> (u64, u64) {
     let swap = bool::from(b.ct_gt(&a));
     if swap {
-      std::mem::swap(&mut a, &mut b);
+      core::mem::swap(&mut a, &mut b);
     }
     debug_assert!(!bool::from(b.ct_gt(&a)));
     let (a, b) = (a.0, b.0);
@@ -1105,7 +1105,7 @@ impl Element {
     let mut a = small_a | (ab.0 << 31);
     let mut b = small_b | (ab.1 << 31);
     if swap {
-      std::mem::swap(&mut a, &mut b);
+      core::mem::swap(&mut a, &mut b);
     }
     (a, b)
   }
@@ -1135,9 +1135,9 @@ impl Element {
       }
 
       if bool::from(b.ct_gt(&a)) {
-        std::mem::swap(&mut a, &mut b);
-        std::mem::swap(&mut f0, &mut f1);
-        std::mem::swap(&mut g0, &mut g1);
+        core::mem::swap(&mut a, &mut b);
+        core::mem::swap(&mut f0, &mut f1);
+        core::mem::swap(&mut g0, &mut g1);
       }
 
       let new_a = (a - b) >> 1;
