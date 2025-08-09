@@ -37,6 +37,7 @@ fn borrowing_sub(a: u64, b: u64, carry: bool) -> (u64, bool) {
 }
 
 /// With A >= B
+#[inline(always)]
 fn add_assing<const A: usize, const B: usize>(a: &mut [u64; A], b: &[u64; B]) -> bool {
   let mut carry = false;
   for i in 0..B {
@@ -56,6 +57,7 @@ fn add_assing<const A: usize, const B: usize>(a: &mut [u64; A], b: &[u64; B]) ->
 
 /// With A >= B
 /// computes c = a - b.
+#[inline(always)]
 fn sub_assing<const A: usize, const B: usize>(a: &mut [u64; A], b: &[u64; B]) -> bool {
   let mut borrow = false;
   for i in 0..B {
@@ -130,8 +132,14 @@ impl Add for Element {
   type Output = Self;
 
   fn add(mut self, rhs: Self) -> Self::Output {
-    let carry = add_assing(&mut self.0, &rhs.0);
-    correct_with_carry(self.0, carry)
+    let c = add_assing(&mut self.0, &rhs.0);
+    debug_assert!(!c);
+
+    let mut copy = self;
+    let borrow = sub_assing(&mut copy.0, &MODULUS.0);
+    let elem = if borrow { self } else { copy };
+    debug_assert!(bool::from(MODULUS.ct_gt(&elem)));
+    elem
   }
 }
 
@@ -181,14 +189,30 @@ fn reduce(high: [u64; 4], mut low: [u64; 4]) -> Element {
   elem
 }
 
+#[inline(always)]
 fn reduce_simple(x: [u64; 5]) -> Element {
   let high = x[4];
-  let (r0, c) = mul_wide_add(C[0], high, x[0]);
-  let (r1, c) = mul_wide_add2(C[1], high, x[1], c);
-  let (r2, c) = x[2].overflowing_add(c);
-  let (r3, c) = x[3].overflowing_add(c as u64);
-  let x = [r0, r1, r2, r3];
-  let elem = correct_with_carry(x, c);
+  let elem = [x[0], x[1], x[2], x[3]];
+
+  let mut copy = elem;
+  let borrow = sub_assing(&mut copy, &MODULUS.0);
+  let mut elem = if borrow { elem } else { copy };
+
+  {
+    let (l, h) = mul_wide_add(C[0], high, elem[0]);
+    elem[0] = l;
+    let (l, h) = mul_wide_add2(C[1], high, h, elem[1]);
+    elem[1] = l;
+    let (l, h) = h.overflowing_add(elem[2]);
+    elem[2] = l;
+    elem[3] += h as u64;
+  }
+
+  let mut copy = elem;
+  let borrow = sub_assing(&mut copy, &MODULUS.0);
+  let elem = if borrow { elem } else { copy };
+  let elem = Element(elem);
+
   debug_assert!(bool::from(MODULUS.ct_gt(&elem)));
   elem
 }
@@ -495,6 +519,7 @@ fn product_scanning_4x2(a: [u64; 4], b: [u64; 2]) -> [u64; 6] {
   res
 }
 
+#[inline(always)]
 fn product_scanning_4x1(a: [u64; 4], b: u64) -> [u64; 5] {
   let mut res = [0; 5];
   let c = {
@@ -923,12 +948,6 @@ pub fn mod_product_scanning(a: &[u64; 4], b: &[u64; 4]) -> [u64; 4] {
   }
 }
 
-pub fn mul_hybrid(a: Element, b: Element) -> Element {
-  let (a, b) = (a.0, b.0);
-  let (b, r) = hybrid_scanning(a, b);
-  correct_with_carry(r, b)
-}
-
 impl Mul for Element {
   type Output = Self;
 
@@ -981,6 +1000,7 @@ impl Element {
 
   #[inline(always)]
   pub fn square(self) -> Self {
+    //NOTE: specialized square doesn't seem to have a drastic improvement over this.
     let elem = Element(mod_product_scanning(&self.0, &self.0));
     debug_assert!(bool::from(MODULUS.ct_gt(&elem)));
     elem
@@ -1044,6 +1064,7 @@ impl Element {
     }
   }
 
+  #[inline(always)]
   fn simple_mul(self, rhs: u64) -> Self {
     let x = product_scanning_4x1(self.0, rhs);
     reduce_simple(x)
@@ -1171,6 +1192,7 @@ impl Element {
 impl Mul<u64> for Element {
   type Output = Self;
 
+  #[inline(always)]
   fn mul(self, rhs: u64) -> Self::Output {
     self.simple_mul(rhs)
   }
@@ -1178,6 +1200,7 @@ impl Mul<u64> for Element {
 impl Mul<i64> for Element {
   type Output = Self;
 
+  #[inline(always)]
   fn mul(mut self, rhs: i64) -> Self::Output {
     let negative = rhs < 0;
     self.conditional_negate(Choice::from(negative as u8));
