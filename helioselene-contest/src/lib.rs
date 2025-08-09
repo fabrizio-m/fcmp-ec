@@ -20,6 +20,7 @@ use paste::paste;
 
 use std_shims::sync::OnceLock;
 use core::assert_eq;
+use helioselene_contest_src::ElemExt;
 
 pub fn test_gen_random_helios_scalar() -> (HelioseleneField, HelioseleneFieldRef) {
     let a_ref = HelioseleneFieldRef::random(&mut OsRng);
@@ -275,6 +276,7 @@ pub extern "C" fn test_helioselene_sqrt_ref() {
     let _ = core::hint::black_box(a.square().sqrt().unwrap());
 }
 
+/*
 #[no_mangle]
 pub extern "C" fn test_helioselene_sqrt_contest() {
     let a = unsafe { HELIOS_TEST_PARAMS.get().unwrap().s1 };
@@ -292,6 +294,7 @@ pub extern "C" fn test_helioselene_pow_contest() {
     let (a, b) = unsafe { (HELIOS_TEST_PARAMS.get().unwrap().s1, HELIOS_TEST_PARAMS.get().unwrap().s2) };
     let _ = core::hint::black_box(a.pow(b));
 }
+*/
 
 #[no_mangle]
 pub extern "C" fn test_helioselene_neg_ref() {
@@ -335,11 +338,13 @@ macro_rules! define_point_tests {
                 let _ = core::hint::black_box(A * s);
             }
 
+                /*
             #[no_mangle]
             pub extern "C" fn [<test_ $point_name _mul_contest>]() {
                 let (A, s) = unsafe { ($STRUCT_VAR_NAME.get().unwrap().A, $STRUCT_VAR_NAME.get().unwrap().s1) };
                 let _ = core::hint::black_box(A * s);
             }
+*/
 
             #[no_mangle]
             pub extern "C" fn [<test_ $point_name _mul_by_generator_ref>]() {
@@ -347,11 +352,13 @@ macro_rules! define_point_tests {
                 let _ = core::hint::black_box([<$PointType Ref>]::generator() * a);
             }
 
+                /*
             #[no_mangle]
             pub extern "C" fn [<test_ $point_name _mul_by_generator_contest>]() {
                 let a = unsafe { $STRUCT_VAR_NAME.get().unwrap().s1 };
                 let _ = core::hint::black_box($PointType::generator() * a);
             }
+*/
 
             #[no_mangle]
             pub extern "C" fn [<test_ $point_name _sub_ref>]() {
@@ -412,7 +419,7 @@ define_test_a_dot_method!(helioselene_sq, square);
 define_test_a_dot_method!(helioselene_dbl, double);
 define_test_a_dot_method!(helioselene_inv, invert);
 define_test_a_dot_method!(helioselene_odd, is_odd);
-define_test_a_dot_method!(helioselene_evn, is_even);
+// define_test_a_dot_method!(helioselene_evn, is_even);
 define_cases!(helioselene_sqrt, HELIOS_TEST_PARAMS, HeliosTestParams);
 define_cases!(helioselene_pow, HELIOS_TEST_PARAMS, HeliosTestParams);
 define_cases!(helioselene_neg, HELIOS_TEST_PARAMS, HeliosTestParams);

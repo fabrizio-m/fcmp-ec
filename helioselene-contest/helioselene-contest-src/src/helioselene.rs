@@ -1018,7 +1018,7 @@ impl Element {
     }
   }
 
-  fn is_even(&self) -> bool {
+  pub fn is_even(&self) -> bool {
     self.0[0] & 0x1 == 0
   }
 

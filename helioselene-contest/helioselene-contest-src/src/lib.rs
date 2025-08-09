@@ -10,9 +10,11 @@ mod backend;
 pub use dalek_ff_group::FieldElement as Field25519;
 
 mod field;
-pub use field::HelioseleneField;
+// pub use field::HelioseleneField;
+pub use helioselene::Element as HelioseleneField;
 
 mod point;
 pub use point::{HeliosPoint, SelenePoint};
 
-mod helioselene;
+pub mod helioselene;
+pub use helioselene::ElemExt;
