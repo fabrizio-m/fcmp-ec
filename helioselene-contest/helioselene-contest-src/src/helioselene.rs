@@ -716,7 +716,7 @@ pub fn hybrid_scanning(a: [u64; 4], b: [u64; 4]) -> (bool, [u64; 4]) {
 
 #[inline(always)]
 /// Full modular multiplication, result < MODULUS.
-pub fn mod_product_scanning(a: [u64; 4], b: [u64; 4]) -> [u64; 4] {
+pub fn mod_product_scanning(a: &[u64; 4], b: &[u64; 4]) -> [u64; 4] {
   let mut res = [0; 4];
 
   // 0: 0x0
@@ -935,7 +935,7 @@ impl Mul for Element {
   #[inline(always)]
   fn mul(self, rhs: Self) -> Self::Output {
     let (a, b) = (self.0, rhs.0);
-    let elem = Element(mod_product_scanning(a, b));
+    let elem = Element(mod_product_scanning(&a, &b));
     debug_assert!(bool::from(MODULUS.ct_gt(&elem)));
     elem
   }
@@ -979,13 +979,9 @@ impl Element {
     self.pow(MODULUS_FERMAT)
   }
 
+  #[inline(always)]
   pub fn square(self) -> Self {
-    let res = square_scanning_4x4(self.0);
-    let [r0, r1, r2, r3, r4, r5, r6, r7] = res;
-    let res_low = [r0, r1, r2, r3];
-    let res_high = [r4, r5, r6, r7];
-
-    let elem = reduce(res_high, res_low);
+    let elem = Element(mod_product_scanning(&self.0, &self.0));
     debug_assert!(bool::from(MODULUS.ct_gt(&elem)));
     elem
   }
